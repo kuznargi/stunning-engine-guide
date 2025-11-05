@@ -50,6 +50,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=10000)
 
 class RecommendRequest(BaseModel):
     query: str = Field(..., description="Текстовый запрос пользователя")
