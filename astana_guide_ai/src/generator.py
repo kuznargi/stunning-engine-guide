@@ -7,14 +7,61 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 
-def build_system_prompt() -> str:
-    return (
-        "Вы — опытный местный гид Астаны, который помогает людям найти лучшие места поблизости. "
-        "Вы даёте 1–3 конкретные рекомендации на основе входного списка релевантных мест и запроса пользователя. "
-        "Говорите понятно, дружелюбно и по делу. Не придумывайте факты — если данных нет, честно укажите это. "
-        "Учитывайте расстояние, категорию, возможные ограничения по времени работы и предпочтения из запроса. "
-        "Отдавайте результат строго в формате JSON согласно схеме."
-    )
+def detect_language(query: str) -> str:
+    """
+    Определяет язык запроса: 'ru', 'kk', 'en'
+    Использует простую эвристику на основе символов
+    """
+    cyrillic_chars = sum(1 for c in query if '\u0400' <= c <= '\u04FF')
+    latin_chars = sum(1 for c in query if 'a' <= c.lower() <= 'z')
+
+    if cyrillic_chars > latin_chars:
+        # Различить русский и казахский по специфичным буквам
+        kz_specific = any(c in query for c in 'әіңғүұқөһӘІҢҒҮҰҚӨҺ')
+        return 'kk' if kz_specific else 'ru'
+    else:
+        return 'en'
+
+
+def build_system_prompt(language: str = 'ru', group_size: Optional[int] = None, group_type: Optional[str] = None) -> str:
+    prompts = {
+        'ru': (
+            "Вы — опытный местный гид Астаны, который помогает людям найти лучшие места поблизости. "
+            "Вы даёте 1–3 конкретные рекомендации на основе входного списка релевантных мест и запроса пользователя. "
+            "Говорите понятно, дружелюбно и по делу. Не придумывайте факты — если данных нет, честно укажите это. "
+            "Учитывайте расстояние, категорию, возможные ограничения по времени работы и предпочтения из запроса. "
+            "{group_context}"
+            "Отдавайте результат строго в формате JSON согласно схеме."
+        ),
+        'kk': (
+            "Сіз Астана қаласы бойынша тәжірибелі жергілікті гид боласыз, адамдарға жақын маңдағы ең жақсы орындарды табуға көмектесесіз. "
+            "Сіз тиісті орындар тізімі мен пайдаланушы сұрауы негізінде 1–3 нақты ұсыныс бересіз. "
+            "Түсінікті, достық және іс бойынша сөйлеңіз. Деректер жасамаңыз — егер деректер болмаса, адал айтыңыз. "
+            "Қашықтықты, санатты, жұмыс уақыты бойынша шектеулерді және сұраудан келген қалауларды ескеріңіз. "
+            "{group_context}"
+            "Нәтижені схемаға сәйкес қатаң JSON форматында беріңіз."
+        ),
+        'en': (
+            "You are an experienced local guide in Astana helping people find the best places nearby. "
+            "You provide 1–3 specific recommendations based on the input list of relevant places and the user query. "
+            "Speak clearly, friendly, and to the point. Don't make up facts — if data is missing, say so honestly. "
+            "Consider distance, category, possible working hours restrictions, and preferences from the query. "
+            "{group_context}"
+            "Return results strictly in JSON format according to the schema."
+        )
+    }
+
+    group_context = ""
+    if group_size and group_size > 1:
+        group_contexts = {
+            'ru': f"ВАЖНО: Запрос для группы из {group_size} человек (тип: {group_type or 'не указан'}). Рекомендуйте места, подходящие для групп. В поле 'group_notes' укажите советы для компании, а в 'estimated_cost_per_person' — примерную стоимость на человека. ",
+            'kk': f"МАҢЫЗДЫ: {group_size} адамнан тұратын топ үшін сұрау (түрі: {group_type or 'көрсетілмеген'}). Топтарға қолайлы орындарды ұсыныңыз. 'group_notes' өрісінде компания үшін кеңестер беріңіз, ал 'estimated_cost_per_person' өрісінде адам басына шамамен құнды көрсетіңіз. ",
+            'en': f"IMPORTANT: Request for a group of {group_size} people (type: {group_type or 'not specified'}). Recommend places suitable for groups. In 'group_notes' provide advice for the company, and in 'estimated_cost_per_person' indicate approximate cost per person. "
+        }
+        group_context = group_contexts.get(language, group_contexts['ru'])
+
+    base_prompt = prompts.get(language, prompts['ru'])
+    return base_prompt.format(group_context=group_context)
 
 
 def _compact_place_item(place: Dict[str, Any]) -> Dict[str, Any]:
@@ -37,43 +84,121 @@ def _compact_place_item(place: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_user_prompt(user_query: str, places: List[Dict[str, Any]]) -> str:
+def build_user_prompt(user_query: str, places: List[Dict[str, Any]], language: str = 'ru', group_size: Optional[int] = None, group_preferences: Optional[List[str]] = None) -> str:
     """Формирует пользовательский промпт с контекстом релевантных мест."""
+    headers = {
+        'ru': {
+            'input': 'Входные данные',
+            'query': 'Запрос пользователя',
+            'places': 'Релевантные места (5-10 шт)',
+            'subcategory': 'Подкатегория',
+            'address': 'Адрес',
+            'district': 'Район',
+            'distance': 'Расстояние',
+            'hours': 'Время работы',
+            'description': 'Описание',
+            'category_unknown': 'Категория не указана',
+            'task': 'Задача',
+            'task_points': [
+                'Сформируй 1–3 рекомендации (в зависимости от уместности).',
+                'Для каждой рекомендации укажи: \'name\', \'category\', \'distance\', \'why\', \'action_plan\', \'estimated_time\', \'working_hours\', \'confidence\'.',
+                'Строго следуй JSON-схеме ниже и не добавляй поясняющий текст вне JSON.'
+            ],
+            'distance_format': 'distance — человеко‑читаемый формат (например, \'800м, ~10 мин пешком\' или \'2.1 км, ~25 мин пешком\').',
+            'no_hours': 'Если нет данных по времени работы — запиши \'Рекомендуем уточнить время работы\'.',
+            'no_fake': 'Не выдумывай лишних деталей: если чего-то нет в списке мест — не придумывай.'
+        },
+        'kk': {
+            'input': 'Кіріс деректері',
+            'query': 'Пайдаланушы сұрауы',
+            'places': 'Тиісті орындар (5-10 дана)',
+            'subcategory': 'Санат түрі',
+            'address': 'Мекенжай',
+            'district': 'Аудан',
+            'distance': 'Қашықтық',
+            'hours': 'Жұмыс уақыты',
+            'description': 'Сипаттама',
+            'category_unknown': 'Санат көрсетілмеген',
+            'task': 'Тапсырма',
+            'task_points': [
+                '1–3 ұсыныс жасаңыз (орындылыққа байланысты).',
+                'Әрбір ұсыныс үшін мыналарды көрсетіңіз: \'name\', \'category\', \'distance\', \'why\', \'action_plan\', \'estimated_time\', \'working_hours\', \'confidence\'.',
+                'Төмендегі JSON-схемаға қатаң түрде сәйкес келіңіз және JSON сыртында түсіндірме мәтін қоспаңыз.'
+            ],
+            'distance_format': 'distance — адамға түсінікті формат (мысалы, \'800м, жаяу ~10 мин\' немесе \'2.1 км, жаяу ~25 мин\').',
+            'no_hours': 'Жұмыс уақыты туралы деректер болмаса — \'Жұмыс уақытын нақтылаңыз\' деп жазыңыз.',
+            'no_fake': 'Артық мәліметтер ойлап табпаңыз: егер орындар тізімінде жоқ болса — ойлап тапқан жоқ.'
+        },
+        'en': {
+            'input': 'Input data',
+            'query': 'User query',
+            'places': 'Relevant places (5-10 items)',
+            'subcategory': 'Subcategory',
+            'address': 'Address',
+            'district': 'District',
+            'distance': 'Distance',
+            'hours': 'Working hours',
+            'description': 'Description',
+            'category_unknown': 'Category not specified',
+            'task': 'Task',
+            'task_points': [
+                'Form 1–3 recommendations (depending on suitability).',
+                'For each recommendation specify: \'name\', \'category\', \'distance\', \'why\', \'action_plan\', \'estimated_time\', \'working_hours\', \'confidence\'.',
+                'Strictly follow the JSON schema below and do not add explanatory text outside JSON.'
+            ],
+            'distance_format': 'distance — human-readable format (e.g., \'800m, ~10 min walk\' or \'2.1 km, ~25 min walk\').',
+            'no_hours': 'If no working hours data — write \'Please verify working hours\'.',
+            'no_fake': 'Don\'t make up details: if something is not in the list of places — don\'t invent it.'
+        }
+    }
+
+    h = headers.get(language, headers['ru'])
+
     header = (
-        "Входные данные:\n"
-        f"Запрос пользователя: {user_query}\n"
-        "Релевантные места (5-10 шт):\n"
+        f"{h['input']}:\n"
+        f"{h['query']}: {user_query}\n"
+        f"{h['places']}:\n"
     )
     lines = [header]
+
+    # Добавить информацию о групповых предпочтениях
+    if group_preferences:
+        prefs_text = {
+            'ru': f"Предпочтения группы: {', '.join(group_preferences)}",
+            'kk': f"Топ қалаулары: {', '.join(group_preferences)}",
+            'en': f"Group preferences: {', '.join(group_preferences)}"
+        }
+        lines.append(prefs_text.get(language, prefs_text['ru']) + "\n")
 
     for i, p in enumerate(places, 1):
         pp = _compact_place_item(p)
         part = [
-            f"{i}. {pp['name']} ({pp.get('category') or 'Категория не указана'})",
+            f"{i}. {pp['name']} ({pp.get('category') or h['category_unknown']})",
         ]
         if pp.get("subcategory"):
-            part.append(f"   Подкатегория: {pp['subcategory']}")
+            part.append(f"   {h['subcategory']}: {pp['subcategory']}")
         if pp.get("address"):
-            part.append(f"   Адрес: {pp['address']}")
+            part.append(f"   {h['address']}: {pp['address']}")
         if pp.get("district"):
-            part.append(f"   Район: {pp['district']}")
+            part.append(f"   {h['district']}: {pp['district']}")
         if pp.get("distance"):
-            part.append(f"   Расстояние: {pp['distance']}")
+            part.append(f"   {h['distance']}: {pp['distance']}")
         if pp.get("working_hours"):
-            part.append(f"   Время работы: {pp['working_hours']}")
+            part.append(f"   {h['hours']}: {pp['working_hours']}")
         if pp.get("description"):
-            # Коротко, обрежем до 240 символов
             desc = str(pp.get("description"))[:240]
-            part.append(f"   Описание: {desc}")
+            part.append(f"   {h['description']}: {desc}")
         lines.append("\n".join(part))
 
     # Инструкции к формату ответа
-    lines.append(
-        "\nЗадача:\n"
-        "- Сформируй 1–3 рекомендации (в зависимости от уместности).\n"
-        "- Для каждой рекомендации укажи: 'name', 'category', 'distance', 'why', 'action_plan', 'estimated_time', 'working_hours', 'confidence'.\n"
-        "- Строго следуй JSON-схеме ниже и не добавляй поясняющий текст вне JSON.\n"
-    )
+    lines.append(f"\n{h['task']}:")
+    for point in h['task_points']:
+        lines.append(f"- {point}")
+
+    # JSON схема с группами
+    group_fields = ""
+    if group_size and group_size > 1:
+        group_fields = ',\n      "group_notes": str | null,\n      "estimated_cost_per_person": str | null,\n      "capacity_suitable": bool | null'
 
     lines.append(
         "JSON-схема:\n"
@@ -87,13 +212,13 @@ def build_user_prompt(user_query: str, places: List[Dict[str, Any]]) -> str:
         "      \"action_plan\": str,\n"
         "      \"estimated_time\": str,\n"
         "      \"working_hours\": str,\n"
-        "      \"confidence\": float\n"
+        "      \"confidence\": float" + group_fields + "\n"
         "    }\n"
         "  ]\n"
         "}\n"
-        "Где: distance — человеко‑читаемый формат (например, '800м, ~10 мин пешком' или '2.1 км, ~25 мин пешком').\n"
-        "Если нет данных по времени работы — запиши 'Рекомендуем уточнить время работы'.\n"
-        "Не выдумывай лишних деталей: если чего-то нет в списке мест — не придумывай.\n"
+        f"Где: {h['distance_format']}\n"
+        f"{h['no_hours']}\n"
+        f"{h['no_fake']}\n"
     )
 
     return "\n".join(lines)
@@ -256,8 +381,12 @@ def _call_gemini(messages: List[Dict[str, str]], model: str = "gemini-1.5-flash"
 def generate_recommendations(
     user_query: str,
     retrieved_places: List[Dict[str, Any]],
-    provider: str = "openai",  # "openai" | "anthropic"
+    provider: str = "openai",  # "openai" | "anthropic" | "gemini"
     model: Optional[str] = None,
+    group_size: Optional[int] = None,
+    group_type: Optional[str] = None,
+    group_preferences: Optional[List[str]] = None,
+    language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Генерирует 1–3 рекомендации на основе списка релевантных мест и запроса пользователя.
@@ -265,8 +394,12 @@ def generate_recommendations(
     Параметры:
     - user_query: текст запроса пользователя
     - retrieved_places: список словарей (результат из retrieval.find_relevant_places)
-    - provider: провайдер LLM ("openai" или "anthropic")
+    - provider: провайдер LLM ("openai", "anthropic" или "gemini")
     - model: имя модели провайдера (по умолчанию разумные значения)
+    - group_size: количество человек в группе (2-10)
+    - group_type: тип группы (family, friends, colleagues, mixed)
+    - group_preferences: предпочтения группы (kids_friendly, accessible, budget_friendly)
+    - language: язык ответа ('ru', 'kk', 'en') или None для авто-определения
 
     Возвращает dict согласно схеме response_format.
     """
@@ -289,12 +422,15 @@ def generate_recommendations(
             }]
         }
 
-    system_prompt = build_system_prompt()
+    # Определить язык запроса (автоматически или использовать переданный)
+    detected_language = language if language and language in ('ru', 'kk', 'en') else detect_language(user_query)
+
+    system_prompt = build_system_prompt(language=detected_language, group_size=group_size, group_type=group_type)
 
     # Передаём в LLM топ-5..10 мест (сократим до 8 для компактности)
     top_places = retrieved_places[:8]
 
-    user_prompt = build_user_prompt(user_query, top_places)
+    user_prompt = build_user_prompt(user_query, top_places, language=detected_language, group_size=group_size, group_preferences=group_preferences)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -349,7 +485,7 @@ def generate_recommendations(
     for r in recs[:3]:
         if not isinstance(r, dict):
             continue
-        out_recs.append({
+        rec = {
             "name": str(r.get("name", "Без названия")),
             "category": str(r.get("category", "Не указано")),
             "distance": str(r.get("distance", "Не указано")),
@@ -358,7 +494,13 @@ def generate_recommendations(
             "estimated_time": str(r.get("estimated_time", "Не указано")),
             "working_hours": str(r.get("working_hours", "Рекомендуем уточнить время работы")),
             "confidence": float(r.get("confidence", 0.5)),
-        })
+        }
+        # Добавить групповые поля, если есть
+        if group_size and group_size > 1:
+            rec["group_notes"] = r.get("group_notes")
+            rec["estimated_cost_per_person"] = r.get("estimated_cost_per_person")
+            rec["capacity_suitable"] = r.get("capacity_suitable")
+        out_recs.append(rec)
 
     return {"recommendations": out_recs}
 

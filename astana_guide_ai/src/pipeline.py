@@ -14,6 +14,10 @@ def get_recommendations(
     max_distance_km: float = 3.0,
     provider: str = "openai",
     model: Optional[str] = None,
+    group_size: Optional[int] = None,
+    group_type: Optional[str] = None,
+    group_preferences: Optional[List[str]] = None,
+    language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Главная функция RAG-системы
@@ -30,6 +34,10 @@ def get_recommendations(
     - max_distance_km: радиус поиска
     - provider: "openai" | "anthropic" | "gemini"
     - model: имя модели провайдера
+    - group_size: количество человек в группе (2-10)
+    - group_type: тип группы (family, friends, colleagues, mixed)
+    - group_preferences: предпочтения группы (kids_friendly, accessible, budget_friendly)
+    - language: язык ответа ('ru', 'kk', 'en') или None для авто-определения
     """
     # 1) Retrieval
     places: List[Dict[str, Any]] = find_relevant_places(
@@ -45,6 +53,10 @@ def get_recommendations(
         retrieved_places=places,
         provider=provider,
         model=model,
+        group_size=group_size,
+        group_type=group_type,
+        group_preferences=group_preferences,
+        language=language,
     )
 
     # 3) Возвращаем JSON + добавим исходные top-places для UI (опционально)

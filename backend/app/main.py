@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import json
+import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
@@ -23,6 +25,7 @@ except Exception as e:
 from app.traffic_simulator import (
     get_current_traffic,
     predict_traffic,
+    get_time_coefficient,
     ASTANA_ROADS,
     BRIDGES,
     SUBURBS,
@@ -58,6 +61,12 @@ class RecommendRequest(BaseModel):
     radius_km: float = Field(3.0, ge=0.1, le=25.0, description="Радиус поиска в км")
     provider: str = Field("openai", description="LLM провайдер: openai|anthropic|gemini")
     model: Optional[str] = Field(None, description="Имя модели (опционально)")
+    # ФИЧА 1: Групповые рекомендации
+    group_size: Optional[int] = Field(None, ge=2, le=10, description="Количество человек (2-10)")
+    group_type: Optional[str] = Field(None, description="Тип группы: family|friends|colleagues|mixed")
+    group_preferences: Optional[List[str]] = Field(None, description="Предпочтения: kids_friendly, accessible, budget_friendly")
+    # ФИЧА 2: Мультиязычность
+    language: Optional[str] = Field(None, description="Язык ответа: ru|kk|en (auto-detect если не указан)")
 
 
 class RecommendationItem(BaseModel):
@@ -69,6 +78,10 @@ class RecommendationItem(BaseModel):
     estimated_time: str
     working_hours: str
     confidence: float
+    # НОВЫЕ ПОЛЯ для групповых рекомендаций
+    group_notes: Optional[str] = None
+    estimated_cost_per_person: Optional[str] = None
+    capacity_suitable: Optional[bool] = None
 
 
 class RetrievedItem(BaseModel):
@@ -433,6 +446,10 @@ def api_recommendations(req: RecommendRequest) -> RecommendResponse:
             max_distance_km=float(req.radius_km),
             provider=provider,
             model=req.model,
+            group_size=req.group_size,
+            group_type=req.group_type,
+            group_preferences=req.group_preferences,
+            language=req.language,
         )
     except Exception as e:
         # Convert internal errors to 500 with message (avoid leaking stack traces)
